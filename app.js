@@ -90,7 +90,7 @@ const AUTH_ERR={'auth/invalid-credential':'Utilizator sau parolă greșită.','a
   'auth/unauthorized-domain':'Google nu e încă pornit pentru site. Spune-i lui Alex.','auth/operation-not-allowed':'Metoda asta de logare nu e pornită încă. Spune-i lui Alex.'};
 const authMsg=e=>{console.error(e);return e&&e.code in AUTH_ERR?AUTH_ERR[e.code]:'N-a mers, mai încearcă.'};
 function setMode(m){mode=m;for(const b of document.querySelectorAll('.seg button'))b.setAttribute('aria-selected',b.dataset.mode===m);
-  $('#gp').classList.toggle('hide',m!=='signup');$('#gateBtn').textContent=m==='signup'?'Fă-mi cont':'Intră';
+  $('#gp').classList.toggle('hide',m!=='signup'||!!(auth.currentUser&&auth.currentUser.isAnonymous));$('#gateBtn').textContent=m==='signup'?'Fă-mi cont':'Intră';
   $('#pw').setAttribute('autocomplete',m==='signup'?'new-password':'current-password');$('#gateErr').textContent=''}
 document.querySelector('.seg').addEventListener('click',e=>{const b=e.target.closest('[data-mode]');if(b)setMode(b.dataset.mode)});
 function gateErr(t){$('#gateErr').textContent=t;if(!t)return;const f=$('#gateF');f.classList.remove('shake');void f.offsetWidth;f.classList.add('shake')}
@@ -104,11 +104,13 @@ $('#gateF').addEventListener('submit',async e=>{e.preventDefault();if(busyAuth)r
   try{
     if(mode==='login'){await signInWithEmailAndPassword(auth,email,pass)}
     else{
-      const gp=$('#gp').value.trim().toLowerCase();if(!gp){gateErr('Scrie și parola găștii.');throw null}
-      const cur=auth.currentUser;let cred;
+      const gp=$('#gp').value.trim().toLowerCase(),cur=auth.currentUser,upgrading=!!(cur&&cur.isAnonymous);
+      if(!gp&&!upgrading){gateErr('Scrie și parola găștii.');throw null}
+      let cred;
       if(cur&&cur.isAnonymous){cred=await linkWithCredential(cur,EmailAuthProvider.credential(email,pass))}
       else cred=await createUserWithEmailAndPassword(auth,email,pass);
-      try{await setDoc(doc(fs,'members',cred.user.uid),{pass:gp,at:Date.now()})}catch(err){}
+      if(gp)try{await setDoc(doc(fs,'members',cred.user.uid),{pass:gp,at:Date.now()})}catch(err){}
+      if(upgrading)toast('Gata! Acum intri cu '+user+' de oriunde.');
       await route(cred.user);
     }
   }catch(err){if(err)gateErr(authMsg(err))}
@@ -155,10 +157,13 @@ function openOnboarding(target){
   $('#onbT').textContent=!edit?'Cine ești?':self?'Profilul tău':'Profilul lui '+(p.name||'');
   $('#onbCancel').classList.toggle('hide',!edit);$('#onbErr').textContent='';
   const u=auth.currentUser;
-  $('#acct').classList.toggle('hide',!edit);
-  $('#acctInfo').textContent=self?userLabel(u):'Ești admin: poți schimba numele, poza sau șterge contul.';
+  const anon=!!(u&&u.isAnonymous);
+  $('#acct').classList.toggle('hide',!self&&!isAdmin);
+  $('#acctInfo').textContent=!self?'Ești admin: poți schimba numele, poza sau șterge contul.':anon?'Contul tău e salvat doar pe telefonul ăsta. Fă-ți utilizator și parolă ca să intri de oriunde.':userLabel(u);
+  $('#saveAcc').classList.toggle('hide',!self||!anon);
   $('#linkG').classList.toggle('hide',!self||hasGoogle(u));
   $('#logoutBtn').classList.toggle('hide',!self);
+  $('#logoutBtn').textContent=edit?'Ieși din cont':'Folosește alt cont';
   $('#delAcc').classList.toggle('hide',self||!isAdmin);
   paintSelfie();checkOnb();show('onb');
 }
@@ -185,6 +190,7 @@ $('#linkG').addEventListener('click',async()=>{const u=auth.currentUser;if(!u)re
     isAdmin=auth.currentUser.email===ADMIN_EMAIL;openOnboarding(uid)}
   catch(err){const t=authMsg(err);if(t)$('#onbErr').textContent=t}});
 $('#logoutBtn').addEventListener('click',()=>signOut(auth));
+$('#saveAcc').addEventListener('click',()=>{setMode('signup');$('#gp').classList.add('hide');$('#gateErr').textContent='';show('gate')});
 $('#delAcc').addEventListener('click',()=>{const t=editTarget,p=prof(t),m=$('#modal');
   m.innerHTML=`<div class="sheet"><h2>Ștergi contul lui ${esc(p.name)}?</h2><p>Dispar profilul, like-urile, „Merg și eu” și comentariile lui. Activitățile adăugate de el rămân. Nu se poate anula.</p>
     <div class="row"><button class="btn sec" id="dN">Nu</button><button class="btn" id="dY">Da, șterge</button></div></div>`;
