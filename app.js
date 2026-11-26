@@ -1,5 +1,5 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import {getAuth,onAuthStateChanged,signOut,GoogleAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,linkWithPopup,
+import {initializeAuth,indexedDBLocalPersistence,browserLocalPersistence,browserPopupRedirectResolver,signInAnonymously,onAuthStateChanged,signOut,GoogleAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,linkWithPopup,
   EmailAuthProvider,linkWithCredential,signInWithEmailAndPassword,createUserWithEmailAndPassword,signInWithCredential} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {getFirestore,doc,getDoc,setDoc,updateDoc,deleteDoc,addDoc,collection,onSnapshot,writeBatch} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
@@ -40,7 +40,8 @@ const SEED=[
 
 const ADMIN_EMAIL='ardelean.alex2003@gmail.com';
 const DOMAIN='la-fam.app';
-const app=initializeApp(firebaseConfig),auth=getAuth(app),fs=getFirestore(app);
+const app=initializeApp(firebaseConfig),fs=getFirestore(app);
+const auth=initializeAuth(app,{persistence:[indexedDBLocalPersistence,browserLocalPersistence],popupRedirectResolver:browserPopupRedirectResolver});
 const gprov=new GoogleAuthProvider();gprov.setCustomParameters({prompt:'select_account'});
 const $=s=>document.querySelector(s);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -52,7 +53,7 @@ const DAYS=[
   {k:'mar',s:'Mar',d:'1',n:'Marți, 1 dec · chill',date:'2026-12-01'}];
 const HEART='<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3.1 4.5 6.7 4.5c2 0 3.5 1.1 4.3 2.5h2c.8-1.4 2.3-2.5 4.3-2.5 3.6 0 5.8 3.7 4.3 7.2C19.5 16.4 12 21 12 21z"/></svg>';
 const ls={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
-let uid=null,isAdmin=false,photoData=null,started=false,seeding=false,mode='login',editTarget=null,busyAuth=false;
+let guest=false,joinGuest=false,uid=null,isAdmin=false,photoData=null,started=false,seeding=false,mode='login',editTarget=null,busyAuth=false;
 const unsubs=[];
 const S={profiles:{},acts:[],likes:[],going:[],comments:[]};
 const openC=new Set(),busy=new Set();
@@ -96,6 +97,7 @@ document.querySelector('.seg').addEventListener('click',e=>{const b=e.target.clo
 function gateErr(t){$('#gateErr').textContent=t;if(!t)return;const f=$('#gateF');f.classList.remove('shake');void f.offsetWidth;f.classList.add('shake')}
 
 $('#gateF').addEventListener('submit',async e=>{e.preventDefault();if(busyAuth)return;
+  if($('#un').value.includes('@'))return gateErr('Ai intrat cu Google? Apasă „Continuă cu Google”. Aici scrii doar utilizatorul tău (fără @).');
   const user=cleanUser($('#un').value),pw=$('#pw').value;
   if(user.length<2)return gateErr('Alege un utilizator de minim 2 caractere (litere, cifre, . _ -).');
   if(!pw)return gateErr('Scrie o parolă.');
@@ -135,20 +137,28 @@ msg('Se încarcă…','O secundă.');
 const slow=setTimeout(()=>msg('Nu mă pot conecta','Verifică internetul și reîncarcă pagina.'),12000);
 onAuthStateChanged(auth,u=>{clearTimeout(slow);route(u)});
 async function route(u){
-  if(!u){stopApp();setMode(mode);return show('gate')}
+  if(!u){stopApp();guest=false;setMode(mode);return show('gate')}
   uid=u.uid;
   isAdmin=u.email===ADMIN_EMAIL;
   try{
     const m=await getDoc(doc(fs,'members',uid));
-    if(!m.exists()){$('#joinErr').textContent='';return show('join')}
+    if(!m.exists()){$('#joinErr').textContent='';
+      $('#joinT').textContent=joinGuest?'Doar te uiți':'Aproape gata';
+      $('#joinP').textContent=joinGuest?'Scrie parola găștii și vezi tot ce plănuim, fără cont.':'Scrie parola găștii ca să intri.';
+      return show('join')}
+    guest=!!m.data().guest&&!!u.isAnonymous;
+    if(guest)return startApp();
     const p=await getDoc(doc(fs,'profiles',uid));const d=p.exists()?p.data():null;
     if(d&&d.name&&d.photo){S.profiles[uid]=d;startApp()}else openOnboarding(uid);
   }catch(e){console.error(e);show('join')}
 }
 $('#joinF').addEventListener('submit',async e=>{e.preventDefault();const gp=$('#jp').value.trim().toLowerCase();if(!gp||!uid)return;
-  try{await setDoc(doc(fs,'members',uid),{pass:gp,at:Date.now()});route(auth.currentUser)}
+  try{await setDoc(doc(fs,'members',uid),{pass:gp,guest:joinGuest,at:Date.now()});route(auth.currentUser)}
   catch(err){$('#joinErr').textContent='Parola găștii e greșită.'}});
-$('#joinOut').addEventListener('click',()=>signOut(auth));
+$('#joinOut').addEventListener('click',()=>{joinGuest=false;signOut(auth)});
+$('#guestBtn').addEventListener('click',async()=>{joinGuest=true;gateErr('');
+  const cur=auth.currentUser;if(cur){joinGuest=true;return route(cur)}
+  try{await signInAnonymously(auth)}catch(e){gateErr(authMsg(e))}});
 
 /* ---------- profile (own, or someone else's for the admin) ---------- */
 function openOnboarding(target){
@@ -191,17 +201,20 @@ $('#linkG').addEventListener('click',async()=>{const u=auth.currentUser;if(!u)re
   catch(err){const t=authMsg(err);if(t)$('#onbErr').textContent=t}});
 $('#logoutBtn').addEventListener('click',()=>signOut(auth));
 $('#saveAcc').addEventListener('click',()=>{setMode('signup');$('#gp').classList.add('hide');$('#gateErr').textContent='';show('gate')});
-$('#delAcc').addEventListener('click',()=>{const t=editTarget,p=prof(t),m=$('#modal');
+$('#delAcc').addEventListener('click',()=>confirmDelAccount(editTarget));
+function confirmDelAccount(t){const p=prof(t),m=$('#modal');
   m.innerHTML=`<div class="sheet"><h2>Ștergi contul lui ${esc(p.name)}?</h2><p>Dispar profilul, like-urile, „Merg și eu” și comentariile lui. Activitățile adăugate de el rămân. Nu se poate anula.</p>
     <div class="row"><button class="btn sec" id="dN">Nu</button><button class="btn" id="dY">Da, șterge</button></div></div>`;
   m.classList.remove('hide');$('#dN').onclick=closeModal;
   $('#dY').onclick=async()=>{closeModal();try{
     for(const col of ['likes','going','comments'])for(const x of S[col].filter(x=>x.uid===t))await deleteDoc(doc(fs,col,x.id));
     await deleteDoc(doc(fs,'profiles',t));await deleteDoc(doc(fs,'members',t));
-    delete S.profiles[t];toast('Cont șters.');startApp()}catch(e){fail(e)}}});
+    delete S.profiles[t];toast('Cont șters.');startApp()}catch(e){fail(e)}}}
 
 /* ---------- live data ---------- */
-function startApp(){show('app');if(started)return render();started=true;
+function chrome(){$('#ro').classList.toggle('hide',!guest);$('#addBtn').classList.toggle('hide',guest);
+  $('#profBtn').classList.toggle('hide',guest);$('#signupBtn').classList.toggle('hide',!guest);$('#adminBtn').classList.toggle('hide',!isAdmin)}
+function startApp(){show('app');chrome();if(started)return render();started=true;
   const stale=setTimeout(()=>$('#stale').classList.remove('hide'),10000);
   const sub=(col,fn)=>unsubs.push(onSnapshot(collection(fs,col),s=>{if(!s.metadata.fromCache){clearTimeout(stale);$('#stale').classList.add('hide')}fn(s);render()},
     e=>{console.error(e);clearTimeout(stale);$('#stale').classList.remove('hide')}));
@@ -246,15 +259,15 @@ function render(){
         ${a.desc?`<p class="desc">${esc(a.desc)}</p>`:''}
         ${link||map?`<div class="lnk">${link}${map}</div>`:''}
         <div class="acts">
-          <button class="pill${liked?' on':''}" data-a="like" data-id="${esc(a.id)}" aria-pressed="${liked}">${HEART}${a.L.length}</button>
-          <button class="pill${going?' on':''}" data-a="go" data-id="${esc(a.id)}" aria-pressed="${going}">Merg și eu${a.G.length?' · '+a.G.length:''}</button>
+          <button class="pill${liked?' on':''}" data-a="like" data-id="${esc(a.id)}" aria-pressed="${liked}"${guest?' disabled':''}>${HEART}${a.L.length}</button>
+          <button class="pill${going?' on':''}" data-a="go" data-id="${esc(a.id)}" aria-pressed="${going}"${guest?' disabled':''}>Merg și eu${a.G.length?' · '+a.G.length:''}</button>
           <button class="pill" data-a="cm" data-id="${esc(a.id)}" aria-expanded="${openC.has(a.id)}">Comentarii${a.C.length?' · '+a.C.length:''}</button>
           ${a.G.length?`<span class="stack">${a.G.slice(0,6).map(x=>av(x.uid)).join('')}</span>`:''}
         </div>
         ${a.G.length?`<div class="who">Merg: ${goingNames.map(esc).join(', ')}</div>`:''}
-        ${mine?`<div class="own"><button data-a="edit" data-id="${esc(a.id)}">Editează</button><button data-a="del" data-id="${esc(a.id)}">Șterge</button></div>`:''}
+        ${mine&&!guest?`<div class="own"><button data-a="edit" data-id="${esc(a.id)}">Editează</button><button data-a="del" data-id="${esc(a.id)}">Șterge</button></div>`:''}
         ${openC.has(a.id)?`<div class="cm">${a.C.map(c=>`<div class="c">${av(c.uid)}<div><b>${esc(prof(c.uid).name)}</b><p>${esc(c.text)}</p></div>${(c.uid===me||isAdmin)?`<button data-a="delc" data-id="${esc(c.id)}" aria-label="Șterge comentariul">×</button>`:''}</div>`).join('')||'<p class="who">Niciun comentariu încă.</p>'}
-          <form class="cf" data-id="${esc(a.id)}"><input maxlength="300" placeholder="Scrie ceva…" aria-label="Comentariu"><button type="submit">Trimite</button></form></div>`:''}
+          ${guest?'':`<form class="cf" data-id="${esc(a.id)}"><input maxlength="300" placeholder="Scrie ceva…" aria-label="Comentariu"><button type="submit">Trimite</button></form>`}</div>`:''}
       </div></article>`}).join('');
 }
 
@@ -265,7 +278,16 @@ async function toggle(col,actId){const key=actId+'__'+uid;if(busy.has(col+key))r
   busy.delete(col+key)}
 $('#crew').addEventListener('click',e=>{const b=e.target.closest('[data-prof]');if(!b)return;const id=b.dataset.prof;if(id===uid||isAdmin)openOnboarding(id)});
 $('#profBtn').addEventListener('click',()=>openOnboarding(uid));
-$('#outBtn').addEventListener('click',()=>{$('#pw').value='';$('#gp').value='';signOut(auth)});
+$('#outBtn').addEventListener('click',()=>{$('#pw').value='';$('#gp').value='';joinGuest=false;signOut(auth)});
+$('#signupBtn').addEventListener('click',async()=>{joinGuest=false;await signOut(auth);setMode('signup')});
+$('#adminBtn').addEventListener('click',adminPanel);
+function adminPanel(){const m=$('#modal');
+  const ids=Object.keys(S.profiles).sort((a,b)=>(S.profiles[a].name||'').localeCompare(S.profiles[b].name||''));
+  m.innerHTML=`<div class="sheet"><h2>Conturi (${ids.length})</h2><p class="who">Schimbă nume și poze sau șterge conturile în plus.</p><ul class="alist">${ids.map(id=>`<li>${av(id)}<span class="nm">${esc(prof(id).name)}${id===uid?' (tu)':''}<small>…${esc(id.slice(-6))}</small></span><button data-ae="${esc(id)}">Editează</button>${id===uid?'':`<button class="del" data-ad="${esc(id)}">Șterge</button>`}</li>`).join('')}</ul>
+    <div class="row"><button class="btn sec" id="aC">Închide</button></div></div>`;
+  m.classList.remove('hide');$('#aC').onclick=closeModal;
+  m.querySelector('.alist').onclick=e=>{const b=e.target.closest('button');if(!b)return;
+    if(b.dataset.ae){closeModal();openOnboarding(b.dataset.ae)}else if(b.dataset.ad)confirmDelAccount(b.dataset.ad)}}
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('[data-day]');if(!b)return;day=b.dataset.day;ls.set('wb-day',day);render()});
 $('#addBtn').addEventListener('click',()=>form(null));
 $('#list').addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(!b)return;const id=b.dataset.id,a=b.dataset.a;
