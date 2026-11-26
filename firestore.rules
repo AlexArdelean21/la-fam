@@ -4,25 +4,31 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function me() { return request.auth.uid; }
     function member() { return signedIn() && exists(/databases/$(database)/documents/members/$(me())); }
-    function admin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(me())); }
+    // Admin: Alex, logat cu Google (email verificat de Google)
+    function admin() {
+      return signedIn() && (
+        (request.auth.token.email == 'ardelean.alex2003@gmail.com' && request.auth.token.email_verified == true)
+        || exists(/databases/$(database)/documents/admins/$(me())));
+    }
     function str(v, max) { return v is string && v.size() <= max; }
 
-    // Parola de intrare: se verifică aici, nu în pagină
+    // Parola găștii: se verifică aici, nu în pagină
     match /members/{uid} {
-      allow read: if signedIn() && me() == uid;
+      allow read: if signedIn() && (me() == uid || admin());
       allow create, update: if signedIn() && me() == uid && request.resource.data.pass == 'show';
+      allow delete: if admin();
     }
 
-    // Adminii se adaugă doar din consolă
     match /admins/{uid} {
       allow read: if signedIn() && me() == uid;
     }
 
     match /profiles/{uid} {
       allow read: if member();
-      allow create, update: if member() && me() == uid
+      allow create, update: if member() && (me() == uid || admin())
         && str(request.resource.data.name, 24) && request.resource.data.name.size() >= 2
         && str(request.resource.data.photo, 150000);
+      allow delete: if admin();
     }
 
     match /acts/{id} {
@@ -43,13 +49,13 @@ service cloud.firestore {
     match /likes/{id} {
       allow read: if member();
       allow create: if member() && request.resource.data.uid == me() && id == request.resource.data.actId + '__' + me();
-      allow delete: if member() && resource.data.uid == me();
+      allow delete: if member() && (resource.data.uid == me() || admin());
     }
 
     match /going/{id} {
       allow read: if member();
       allow create: if member() && request.resource.data.uid == me() && id == request.resource.data.actId + '__' + me();
-      allow delete: if member() && resource.data.uid == me();
+      allow delete: if member() && (resource.data.uid == me() || admin());
     }
 
     match /comments/{id} {
